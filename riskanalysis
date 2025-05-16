@@ -1,0 +1,58 @@
+{R}
+#Filter by Columbia:
+
+Columbia_combined_df <- pindexflight_df_joined %>%
+  filter(Origin %in% c("Columbia"))
+
+
+#Normalize Index P s.t. sum equals 1:
+Columbia_combined_df <- Columbia_combined_df %>%
+   mutate(pindexnorm_co = Columbia_combined_df$Transmission_Pot/ sum(Columbia_combined_df$Transmission_Pot))
+
+
+#Check norm worked:
+print(sum(Columbia_combined_df$pindexnorm_co))
+
+
+#Calcuate H_Columbia
+
+Columbia_combined_df <- Columbia_combined_df %>%
+  mutate(hpi =  pindexnorm_co * log2(pindexnorm_co))
+
+Columbia_Hc <- -sum(Columbia_combined_df$hpi)
+
+print(Columbia_Hc)
+
+
+#Join Pt data:
+
+
+co_pt_joined <- Columbia_combined_df %>%
+  left_join(Portugal_combined_df, by = "year")
+
+#Compute "Divergence"
+
+co_pt_joined <- co_pt_joined %>%
+  mutate(divcopt =  co_pt_joined$pindexnorm_pt * (1/(log2(co_pt_joined$pindexnorm_pt/co_pt_joined$pindexnorm_co))))
+
+
+
+Columbia_div <- -sum(co_pt_joined$divcopt)
+
+print(Columbia_div)
+
+#Flight Norm calc.
+
+overall_flight_norm_co <- sum(pindexflight_df_joined$passenger_count[pindexflight_df_joined$Origin == "Columbia"])/sum(pindexflight_df_joined$passenger_count)
+
+print(overall_flight_norm_co)
+
+
+#Calculate Risk:
+
+Overall_risk_co <- Columbia_Hc * Columbia_div * overall_flight_norm_co
+
+print(Overall_risk_co)
+
+# Add to df
+risk_df <- rbind(risk_df, data.frame(Origin = "Columbia", Overall_risk = Overall_risk_co))
