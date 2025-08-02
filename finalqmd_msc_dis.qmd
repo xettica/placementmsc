@@ -1,0 +1,2265 @@
+---
+title: "updatedmedianpanalysis"
+format: html
+editor: visual
+---
+
+packages:
+
+```{r}
+require(classInt)
+require(curl)
+require(dbscan)
+require(downloader)
+require(dplyr)
+require(fasterize)
+require(foreign)
+require(fpc)
+require(fs)
+require(geojsonio)
+require(ggplot2)
+require(h3jsr)
+require(h3r)
+require(here)
+require(janitor)
+require(osmdata)
+require(osmextract)
+require(plotly)
+require(raster)
+require(readxl)
+require(RColorBrewer)
+require(sf)
+require(sp)
+require(spData)
+require(spatstat)
+require(spatstat.geom)
+require(stars)
+require(terra)
+require(tidyterra)
+require(tidyverse)
+require(tmap)
+require(tmaptools)
+require(DT)
+require(tidyr)
+require(stringr)
+require(ggrepel)
+require(ggtext)
+require(countrycode)
+require(ggbump)
+require(MetBrewer)
+require(scales)
+require(data.table)
+require(dendextend)
+require(gridExtra)
+require(circlize)
+require(rnaturalearth)
+require(cartogram)
+require(ggforce)
+require(purrr)
+require(viridis)
+```
+
+## Import Data
+
+Waste water data:
+
+```{r}
+#Wste water EXPERIMENTAL DATA
+
+    wwdata<- read.csv("wastewaterdata_denv_month_year_anonimized.csv")
+    wwdata<- wwdata %>% filter(Region=="Portugal")
+```
+
+Flight data:
+
+```{r}
+## import flight dara
+
+    flight <- readr::read_csv("mock_flight_data.csv",  locale = locale(encoding = "latin1"))
+    flight <- janitor::clean_names(flight)
+
+    as.data.frame(flight)
+    medianflights <- flight
+
+    #Organize and clean the district names.
+    medianflights <- medianflights%>%
+    mutate(
+        District = case_when(
+        dest %in% c("BEJA") ~ "Beja",
+        dest %in% c("EVORA") ~ "Évora",
+        dest %in% c("AVEIRO") ~ "Aveiro",
+        dest %in% c("BRAGA") ~ "Braga",
+        dest %in% c("BRAGANÇA") ~ "Bragança",
+        dest %in% c("CASTELO BRANCO") ~ "Castelo Branco",
+        dest %in% c("COIMBRA") ~ "Coimbra",
+        dest %in% c("FARO", "PORTIMÃO") ~ "Faro",
+        dest %in% c("GUARDA") ~ "Guarda",
+        dest %in% c("Leiria") ~ "Leiria",
+        dest %in% c("CASCAIS", "LISBOA") ~ "Lisboa",
+        dest %in% c("FUNCHAL", "P.SANTO") ~ "Madeira",
+        dest %in% c("PORTOALEGRE") ~ "Portalegre",
+        dest %in% c("PORTO") ~ "Porto",
+        dest %in% c("SANTAREM") ~ "Santarém",
+        dest %in% c("SETUBAL") ~ "Setúbal",
+        dest %in% c("VIANA DO CASTELO") ~ "Viana do Castelo",
+        dest %in% c("VILA REAL") ~ "Vila Real",
+        dest %in% c("VISEU") ~ "Viseu",
+        dest %in% c("CORVO", "FLORES", "GRACIOSA", "HORTA", "LAJES", "P.DELGADA", "PICO", "S.JORGE", "S.MARIA") ~ "Azores",    
+        TRUE ~ "Other"
+        )
+    )
+
+
+    #remove azores and madeira
+    
+    medianflights <- medianflights %>%
+        filter(!(dest %in% c("Azores", "Madeira")))
+
+
+    
+    # Fill in missing values with zeros
+
+    medianflights <- medianflights %>%
+        mutate(across(where(is.numeric), ~replace_na(., 0)))
+
+
+    #Format as long
+
+    medianflights <- medianflights %>%
+    pivot_longer(cols = jan:dec, 
+                names_to = "month", 
+                values_to = "passengercount") %>%
+    group_by(orig, month, year) %>%  # Group by country and year
+    summarise(passenger_count = sum(passengercount, na.rm = TRUE), .groups = "drop") 
+
+
+
+    # Convert month names to numbers
+    months_num <- match(medianflights$month, c("jan", "feb", "mar", "apr", "may", "jun","jul", "aug", "sep", "oct", "nov", "dec"))
+
+
+    # Create the new formatted date column
+    medianflights <- medianflights %>%
+    mutate(year = as.Date(paste(year, months_num, "02", sep = "-")))
+    medianflights$year <- as.Date(medianflights$year, format = "%Y.%m.%d")
+
+
+    #Translate country names to English
+    medianflights <- medianflights%>%
+    mutate(
+        Origin = case_when(
+        orig %in% c("Angola") ~ "Angola",
+        orig %in% c("Brasil") ~ "Brazil",
+        orig %in% c("China") ~ "China",
+        orig %in% c("Colombia") ~ "Colombia",
+        orig %in% c("Costa Rica") ~ "Costa Rica",
+        orig %in% c("Cuba") ~ "Cuba",
+        orig %in% c("República Dominicana") ~ "Dominican Republic",
+        orig %in% c("França") ~ "France",
+        orig %in% c("Guiana Francesa") ~ "frenchguiana",
+        orig %in% c("Alemanha") ~ "Germany",
+        orig %in% c("India") ~ "India",
+        orig %in% c("Indonésia") ~ "Indonesia",
+        orig %in% c("Maurício") ~ "Mauritius",
+        orig %in% c("México") ~ "Mexico",
+        orig %in% c("Moçambique") ~ "Mozambique",
+        orig %in% c("Mianmar", "Birmânia") ~ "Myanmar",
+        orig %in% c("Nepal") ~ "Nepal",
+        orig %in% c("Nova Caledônia") ~ "newcaledonia",
+        orig %in% c("Porto Rico") ~ "puertorico",
+        orig %in% c("Portugal") ~ "Portugal",
+        orig %in% c("Senegal") ~ "Senegal",
+        orig %in% c("Tailândia") ~ "Thailand",
+        orig %in% c("Venezuela") ~ "Venezuela",
+        orig %in% c("Vietname") ~ "Vietnam",
+        orig %in% c("Inglaterra") ~ "UnitedKingdom",
+        TRUE ~ "Other"
+        )
+    )
+
+    medianflights <- medianflights %>%
+    filter(Origin != "Other") #Remove countries with other
+    
+
+    #remove month column
+    medianflights <- medianflights %>% select(-contains("month")) 
+    
+    #remove orig columns
+    medianflights <- medianflights %>% select(-c(orig))
+    data.table::setnames(medianflights, "year", "date")
+    data.table::setnames(medianflights, "Origin", "Country")
+```
+
+Index P Data:
+
+```{r}
+## INDEX P DATA
+
+    #Create empty Data Frame for median data
+
+    median_df <- data.frame(
+        date = as.Date(character()),
+        year = double(),
+        month = character()
+    )
+
+    ##countries and regions
+    #import each country or region and relabel data, then add to overall index p df
+
+    Africa_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Africa_summaries_per_date.csv")
+    Africa_medians <- Africa_medians %>% rename(Africa_median_p="median_p")
+    median_df <- Africa_medians
+
+
+    Americas_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Americas_summaries_per_date.csv")
+    Americas_medians<- Americas_medians %>% rename(Americas_median_p="median_p")
+    median_df <- median_df %>% left_join(Americas_medians, by = c("year", "month", "date"))
+
+  
+
+    Angola_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Angola_summaries_per_date.csv")
+    Angola_medians<- Angola_medians %>% rename(Angola_median_p="median_p")
+    median_df <- median_df %>% left_join(Angola_medians, by = c("year", "month", "date"))
+    
+    
+    
+    Asia_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Asia_summaries_per_date.csv")
+    Asia_medians<- Asia_medians %>% rename(Asia_median_p="median_p")
+    median_df <- median_df %>% left_join(Asia_medians, by = c("year", "month", "date"))
+
+
+    Brazil_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Brazil_summaries_per_date.csv")
+    Brazil_medians<- Brazil_medians %>% rename(Brazil_median_p="median_p")
+    median_df <- median_df %>% left_join(Brazil_medians, by = c("year", "month", "date"))
+
+
+    Caribbean_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Caribbean_summaries_per_date.csv")
+    Caribbean_medians<- Caribbean_medians %>% rename(Caribbean_median_p="median_p")
+    median_df <- median_df %>% left_join(Caribbean_medians, by = c("year", "month", "date"))
+    
+
+    
+    CentralAmerica_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/CentralAmerica_summaries_per_date.csv")
+    CentralAmerica_medians<- CentralAmerica_medians %>% rename(CentralAmerica_median_p="median_p")
+    median_df <- median_df %>% left_join(CentralAmerica_medians, by = c("year", "month", "date"))
+    
+    
+    China_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/China_summaries_per_date.csv")
+    China_medians<- China_medians %>% rename(China_median_p="median_p")
+    median_df <- median_df %>% left_join(China_medians, by = c("year", "month", "date"))
+        
+
+     Colombia_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Columbia_summaries_per_date.csv")
+    Colombia_medians<- Colombia_medians %>% rename(Colombia_median_p="median_p")
+    median_df <- median_df %>% left_join(Colombia_medians, by = c("year", "month", "date"))  
+
+      CostaRica_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/CostaRica_summaries_per_date.csv")
+    CostaRica_medians<- CostaRica_medians %>% rename(CostaRica_median_p="median_p")
+    median_df <- median_df %>% left_join(CostaRica_medians, by = c("year", "month", "date"))
+    
+    
+      Cuba_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Cuba_summaries_per_date.csv")
+    Cuba_medians<- Cuba_medians %>% rename(Cuba_median_p="median_p")
+    median_df <- median_df %>% left_join(Cuba_medians, by = c("year", "month", "date"))
+
+    
+      DominicanRepublic_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/DominicanRepublic_summaries_per_date.csv")
+    DominicanRepublic_medians<- DominicanRepublic_medians %>% rename(DominicanRepublic_median_p="median_p")
+    median_df <- median_df %>% left_join(DominicanRepublic_medians, by = c("year", "month", "date"))
+    
+
+    
+      EastAfrica_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/EastAfrica_summaries_per_date.csv")
+    EastAfrica_medians<- EastAfrica_medians %>% rename(EastAfrica_median_p="median_p")
+    median_df <- median_df %>% left_join(EastAfrica_medians, by = c("year", "month", "date"))
+
+
+      EastAsia_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/EastAsia_summaries_per_date.csv")
+    EastAsia_medians<- EastAsia_medians %>% rename(EastAsia_median_p="median_p")
+    median_df <- median_df %>% left_join(EastAsia_medians, by = c("year", "month", "date")) 
+    
+
+      Europe_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Europe_summaries_per_date.csv")
+    Europe_medians<- Europe_medians %>% rename(Europe_median_p="median_p")
+    median_df <- median_df %>% left_join(Europe_medians, by = c("year", "month", "date")) 
+    
+    
+      France_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/France_summaries_per_date.csv")
+   France_medians<- France_medians %>% rename(France_median_p="median_p")
+    median_df <- median_df %>% left_join(France_medians, by = c("year", "month", "date")) 
+    
+    
+      Germany_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Germany_summaries_per_date.csv")
+   Germany_medians<- Germany_medians %>% rename(Germany_median_p="median_p")
+    median_df <- median_df %>% left_join(Germany_medians, by = c("year", "month", "date")) 
+        
+    
+      India_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/India_summaries_per_date.csv")
+    India_medians<- India_medians %>% rename(India_median_p="median_p")
+    median_df <- median_df %>% left_join(India_medians, by = c("year", "month", "date")) 
+        
+ 
+    
+      Indonesia_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Indonesia_summaries_per_date.csv")
+    Indonesia_medians<- Indonesia_medians %>% rename(Indonesia_median_p="median_p")
+    median_df <- median_df %>% left_join(Indonesia_medians, by = c("year", "month", "date")) 
+
+
+
+    
+      Mauritius_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Mauritius_summaries_per_date.csv")
+    Mauritius_medians<- Mauritius_medians %>% rename(Mauritius_median_p="median_p")
+    median_df <- median_df %>% left_join(Mauritius_medians, by = c("year", "month", "date")) 
+    
+      Mexico_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Mexico_summaries_per_date.csv")
+    Mexico_medians<- Mexico_medians %>% rename(Mexico_median_p="median_p")
+    median_df <- median_df %>% left_join(Mexico_medians, by = c("year", "month", "date")) 
+     
+    
+
+      MiddleAfrica_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/MiddleAfrica_summaries_per_date.csv")
+    MiddleAfrica_medians<- MiddleAfrica_medians %>% rename(MiddleAfrica_median_p="median_p")
+    median_df <- median_df %>% left_join(MiddleAfrica_medians, by = c("year", "month", "date")) 
+
+    
+    Mozambique_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Mozambique_summaries_per_date.csv")
+    Mozambique_medians<- Mozambique_medians %>% rename(Mozambique_median_p="median_p")
+    median_df <- median_df %>% left_join(Mozambique_medians, by = c("year", "month", "date"))
+
+    
+     Myanmar_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Myanmar_summaries_per_date.csv")
+    Myanmar_medians<- Myanmar_medians %>% rename(Myanmar_median_p="median_p")
+    median_df <- median_df %>% left_join(Myanmar_medians, by = c("year", "month", "date")) 
+    
+    Nepal_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Nepal_summaries_per_date.csv")
+    Nepal_medians<- Nepal_medians %>% rename(Nepal_median_p="median_p")
+    median_df <- median_df %>% left_join(Nepal_medians, by = c("year", "month", "date")) 
+    
+     Portugal_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Portugal_summaries_per_date.csv")
+    Portugal_medians<- Portugal_medians %>% rename(Portugal_median_p="median_p")
+    median_df <- median_df %>% left_join(Portugal_medians, by = c("year", "month", "date")) 
+    
+     Senegal_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Senegal_summaries_per_date.csv")
+    Senegal_medians<- Senegal_medians %>% rename(Senegal_median_p="median_p")
+    median_df <- median_df %>% left_join(Senegal_medians, by = c("year", "month", "date")) 
+    
+
+     SouthAmerica_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/SouthAmerica_summaries_per_date.csv")
+    SouthAmerica_medians<- SouthAmerica_medians %>% rename(SouthAmerica_median_p="median_p")
+    median_df <- median_df %>% left_join(SouthAmerica_medians, by = c("year", "month", "date")) 
+
+    
+     SouthAsia_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/SouthAsia_summaries_per_date.csv")
+    SouthAsia_medians<- SouthAsia_medians %>% rename(SouthAsia_median_p="median_p")
+    median_df <- median_df %>% left_join(SouthAsia_medians, by = c("year", "month", "date"))
+    
+    
+     SoutheastAsia_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/SoutheastAsia_summaries_per_date.csv")
+    SoutheastAsia_medians<- SoutheastAsia_medians %>% rename(SoutheastAsia_median_p="median_p")
+    median_df <- median_df %>% left_join(SoutheastAsia_medians, by = c("year", "month", "date"))
+    
+
+     Thailand_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Thailand_summaries_per_date.csv")
+    Thailand_medians<- Thailand_medians %>% rename(Thailand_median_p="median_p")
+    median_df <- median_df %>% left_join(Thailand_medians, by = c("year", "month", "date"))
+
+    
+    
+     UnitedKingdom_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/UnitedKingdom_summaries_per_date.csv")
+    UnitedKingdom_medians<- UnitedKingdom_medians %>% rename(UnitedKingdom_median_p="median_p")
+    median_df <- median_df %>% left_join(UnitedKingdom_medians, by = c("year", "month", "date"))
+
+
+    
+        
+    Venezuela_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Venezuela_summaries_per_date.csv")
+    Venezuela_medians<- Venezuela_medians %>% rename(Venezuela_median_p="median_p")
+    median_df <- median_df %>% left_join(Venezuela_medians, by = c("year", "month", "date"))
+
+
+    Vietnam_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/Vietnam_summaries_per_date.csv")
+    Vietnam_medians<- Vietnam_medians %>% rename(Vietnam_median_p="median_p")
+    median_df <- median_df %>% left_join(Vietnam_medians, by = c("year", "month", "date"))
+    
+
+    WestAfrica_medians <-  readr::read_csv("P_rasters_code/Index_P_summaries/WestAfrica_summaries_per_date.csv")
+    WestAfrica_medians<- WestAfrica_medians %>% rename(WestAfrica_median_p="median_p")
+    median_df <- median_df %>% left_join(WestAfrica_medians, by = c("year", "month", "date"))   
+    
+    
+    #ensure it's a df
+    median_df<- as.data.frame(median_df)
+    
+    #remove mean p as we will be working with medians
+    median_df <- median_df %>% select(-contains("mean_p"))
+
+
+    median_df_formated <- gather(median_df, key="Country", value="Transmission_Pot", -date, -month, -year)
+
+    # Remove "_medians from column names" 
+    median_df_formated <- median_df_formated %>% mutate(Country = gsub("_median_p", "", Country))
+    
+    #check head
+    head(median_df_formated)
+
+```
+
+### Data Wrangling:
+
+```{r}
+## join index P and flight data
+
+    #ensure data format
+    median_df_formated$date <- as.Date(median_df_formated$date, format = "%Y/%m/%d")
+    medianflights$date <- as.Date(medianflights$date, format = "%Y/%m/%d")
+    median_df_formated <- median_df_formated %>%  mutate_if(is.Date, ~ . + 1)
+
+    median_df_joined <- median_df_formated %>% left_join(medianflights, by = c("date" = "date", "Country" = "Country"))
+    median_df_joined$passenger_count[is.na(median_df_joined$passenger_count)]<- 0
+    
+    
+#Create regions and add passenger data to them    
+    
+#Africa:
+        #Define countries    
+        african_countries <- c("Angola", "Mauritius", "Mozambique", "Senegal")
+        
+        # Sum passenger_count per date for these countries
+        africa_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% african_countries, ], 
+                                 sum)
+        
+        # Append to "Africa"
+        median_df_joined[median_df_joined$Country == "Africa", "passenger_count"] <- africa_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "Africa", "date"], africa_sums$date)]
+#Americas:
+         #Define countries    
+        american_countries <- c("Brazil", "Colombia", "CostaRica", "Cuba", "Dominican Republic", "Mexico", "Venezuela")
+        
+        # Sum passenger_count per date for these countries
+        americas_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% american_countries, ], 
+                                 sum)
+        
+        # Append to "Americas" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "Americas", "passenger_count"] <- americas_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "Americas", "date"], americas_sums$date)]
+
+#Asia:
+        #Define countries    
+        asian_countries <- c("China", "India", "Indonesia", "Myanmar", "Nepal", "Thailand", "Vietnam")
+        
+        # Sum passenger_count per date for these countries
+        asia_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% asian_countries, ], 
+                                 sum)
+        
+        # Append to "Asia" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "Asia", "passenger_count"] <- asia_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "Asia", "date"], asia_sums$date)]  
+        
+#Europe:
+        #Define countries    
+        european_countries <- c("France", "Germany", "UnitedKingdom")
+        
+        # Sum passenger_count per date for these countries
+        europe_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% european_countries, ], 
+                                 sum)
+        
+        # Append to "Europe" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "Europe", "passenger_count"] <- europe_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "Europe", "date"], europe_sums$date)]   
+
+#Caribbean:
+        #Define countries    
+        caribbean_countries <- c("Cuba", "Dominican Republic")
+        
+        # Sum passenger_count per date for these countries
+        caribbean_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% caribbean_countries, ], 
+                                 sum)
+        
+        # Append to "caribbean" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "Caribbean", "passenger_count"] <- caribbean_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "Caribbean", "date"], caribbean_sums$date)]
+        
+#Central America:
+        #Define countries    
+        centralamerican_countries <- c("CostaRica", "Mexico")
+        
+        # Sum passenger_count per date for these countries
+        centralamerican_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% centralamerican_countries, ], 
+                                 sum)
+        
+        # Append to "centralamerican" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "CentralAmerica", "passenger_count"] <- centralamerican_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "CentralAmerica", "date"], centralamerican_sums$date)]
+        
+        
+#East Africa:
+        #Define countries    
+        eastafrican_countries <- c("Mauritius", "Mozambique")
+        
+        # Sum passenger_count per date for these countries
+        eastafrican_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% eastafrican_countries, ], 
+                                 sum)
+        
+        # Append to "EastAfrica" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "EastAfrica", "passenger_count"] <- eastafrican_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "EastAfrica", "date"], eastafrican_sums$date)]
+        
+#East Asia:
+        #Define countries    
+        eastasian_countries <- c("China")
+        
+        # Sum passenger_count per date for these countries
+        eastasian_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% eastasian_countries, ], 
+                                 sum)
+        
+        # Append to "EastAsia" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "EastAsia", "passenger_count"] <- eastasian_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "EastAsia", "date"], eastasian_sums$date)]
+
+        
+#Middle Africa:
+        #Define countries    
+        midafrican_countries <- c("Angola")
+        
+        # Sum passenger_count per date for these countries
+        midafrican_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% midafrican_countries, ], 
+                                 sum)
+        
+        # Append to "MiddleAfrica" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "MiddleAfrica", "passenger_count"] <- midafrican_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "MiddleAfrica", "date"], midafrican_sums$date)]
+        
+#South America:
+        #Define countries    
+        southamerican_countries <- c("Brazil", "Colombia", "Venezuela")
+        
+        # Sum passenger_count per date for these countries
+        southamerican_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% southamerican_countries, ], 
+                                 sum)
+        
+        # Append to "SouthAmerican" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "SouthAmerica", "passenger_count"] <- southamerican_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "SouthAmerica", "date"], southamerican_sums$date)] 
+        
+#South Asia:
+        #Define countries    
+        southasian_countries <- c("India", "Myanmar","Nepal")
+        
+        # Sum passenger_count per date for these countries
+        southasian_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% southasian_countries, ], 
+                                 sum)
+        
+        # Append to "SouthAsia" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "SouthAsia", "passenger_count"] <- southasian_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "SouthAsia", "date"], southasian_sums$date)]
+        
+
+#Southeast Asia:
+        #Define countries    
+        southeastasian_countries <- c("Indonesia", "Thailand", "Vietnam")
+        
+        # Sum passenger_count per date for these countries
+        southeastasian_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% southeastasian_countries, ], 
+                                 sum)
+        
+        # Append to "SoutheastAsia" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "SoutheastAsia", "passenger_count"] <- southeastasian_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "SoutheastAsia", "date"], southeastasian_sums$date)]
+        
+#Western Africa:
+        #Define countries    
+        westafrican_countries <- c("Senegal")
+        
+        # Sum passenger_count per date for these countries
+        westafrican_sums <- aggregate(passenger_count ~ date, 
+                                 data = median_df_joined[median_df_joined$Country %in% westafrican_countries, ], 
+                                 sum)
+        
+        # Append to "WestAfrica" in its respective Country Column
+        median_df_joined[median_df_joined$Country == "WestAfrica", "passenger_count"] <- westafrican_sums$passenger_count[
+          match(median_df_joined[median_df_joined$Country == "WestAfrica", "date"], westafrican_sums$date)]
+        
+        
+
+    #Normalize by max
+    median_df_joined$passenger_count_norm <- (median_df_joined$passenger_count/max(median_df_joined$passenger_count))
+    median_df_joined$Transmission_Pot_norm <- (median_df_joined$Transmission_Pot/max(median_df_joined$Transmission_Pot))
+```
+
+```{r}
+
+#check max transmission potential:
+print(range(median_df_joined$Transmission_Pot_norm))
+
+#check max passenger count:
+
+print(range(median_df_joined$passenger_count))
+```
+
+Plot to check:
+
+```{r}
+ggplot(median_df_joined) + 
+  geom_point(aes(x=Transmission_Pot, y=passenger_count)) +
+  facet_wrap(~Country, scales="free")
+
+ggplot(median_df_joined) + 
+  geom_point(aes(x=Transmission_Pot_norm, y=passenger_count_norm)) +
+  facet_wrap(~Country, scales="free")
+
+ggplot(median_df_joined) + 
+  geom_line(aes(x=date, y=passenger_count_norm)) +
+  facet_wrap(~Country, scales="free")
+
+```
+
+Create Exclusion: Covid Years:
+
+```{r}
+median_df_joined_noCOVID<- median_df_joined %>% filter(! (date >= "2020-01-01" & date <= "2021-12-01"))
+
+#plot check
+ggplot(median_df_joined_noCOVID) + 
+  geom_line(aes(x=date, y=passenger_count_norm)) +
+  facet_wrap(~Country, scale = "free")
+```
+
+## Direct Risk Calculation - Simple Risk
+
+```{r}
+
+#set function
+    do_actions_simplerisk<- function(country_label, country_data){
+
+        #calculate median passenger count per country
+        Kb<- (median(country_data$passenger_count[country_data$Country == country_label]))
+        
+        #multiply mean passenger by date index p
+        risk_pmedian_co <- Kb*country_data$Transmission_Pot_norm
+
+        return(risk_pmedian_co)
+    }
+
+    
+    #select countries to use
+    # all_countries<- c("Angola","Brazil", "China", "Colombia", "Costa_Rica", "Cuba", "Dominican Republic", "France", "frenchguiana", "Germany", "India", "Indonesia", "Mauritius", "Mexico", "Mozambique", "Myanmar", "Nepal", "portugal", "Senegal", "Thailand", "Venezuela","Vietnam", "UnitedKingdom")
+    all_countries<- unique(median_df_joined_noCOVID$Country)
+
+    #Set empty data frame
+    results_simpleriskdf <- data.frame()
+
+    # Loop over countries
+    for (country_label in all_countries) {
+        
+      
+  #select ensure dates are in correct format
+  all_dates<-  range(as.Date(unique(median_df_joined_noCOVID$date), "%Y-%m-%d"))
+  all_dates<-  seq(all_dates[1],all_dates[2],by="1 month")
+
+    for (idate in 1:length(all_dates)){
+
+      this_date<- all_dates[idate]
+      print(paste0(country_label,"::",this_date))
+            
+  ## Filter per this i country
+  country_data_median <- median_df_joined_noCOVID %>% filter(Country == country_label) %>% filter(date == this_date)
+
+      if(nrow(country_data_median)==0){
+        #add NA when this fails
+        res<- data.frame(Country = country_label, risk_pmedian = NA, date = this_date)
+            }else{
+                    
+        #apply method and bind country results
+        results_simplerisk <- do_actions_simplerisk(country_label = country_label, country_data = country_data_median)
+  
+        res<- data.frame(Country = country_label, risk_pmedian = results_simplerisk, date = this_date)       
+            }
+            results_simpleriskdf <- rbind( results_simpleriskdf, res )
+        }
+    }
+
+    head(results_simpleriskdf, n=100)
+```
+
+plot check:
+
+```{r}
+ggplot(results_simpleriskdf) +
+  geom_line(aes(x=date, y=risk_pmedian)) + facet_wrap(~Country, scale = "free")
+```
+
+Summarize data by time frame:
+
+```{r}
+#### summarize per month
+
+    risk_month_simple<- results_simpleriskdf
+    risk_month_simple<- risk_month_simple %>% mutate(month=format(date,"%m"))
+    risk_month_simple<- risk_month_simple %>% group_by(Country, month) %>% summarise(risk_sum=sum(risk_pmedian, na.rm = TRUE), risk_mean=mean(risk_pmedian, na.rm = TRUE), risk_med=median(risk_pmedian, na.rm = TRUE),  risk_sd=sd(risk_pmedian, na.rm = TRUE)) %>% data.frame() 
+    
+    #plot check
+    ggplot(risk_month_simple) +
+        geom_line(aes(x=month, y=risk_sum, group=1)) + facet_wrap(~Country, scales="free")
+    
+### summarize per year
+
+    risk_year_simple<- results_simpleriskdf
+    risk_year_simple<- risk_year_simple %>% mutate(year=format(date,"%Y"))
+    risk_year_simple<- risk_year_simple %>% group_by(Country, year) %>% summarise(risk_sum=sum(risk_pmedian, na.rm = TRUE), risk_mean=mean(risk_pmedian, na.rm = TRUE), risk_med=median(risk_pmedian, na.rm = TRUE),  risk_sd=sd(risk_pmedian, na.rm = TRUE)) %>% data.frame() 
+    
+    
+    #plot check
+    ggplot(risk_year_simple) +
+        geom_line(aes(x=year, y=risk_sum, group=1)) + facet_wrap(~Country, scales="free")
+
+    
+#Summarize overall    
+  
+    risk_overall_simple<- results_simpleriskdf
+    risk_overall_simple<- risk_overall_simple %>% mutate(month=format(date,"%m"))
+    risk_overall_simple<- risk_overall_simple %>% group_by(month) %>% summarise(risk_sum=sum(risk_pmedian, na.rm = TRUE), risk_mean=mean(risk_pmedian, na.rm = TRUE), risk_med=median(risk_pmedian, na.rm = TRUE),  risk_sd=sd(risk_pmedian, na.rm = TRUE)) %>% data.frame() 
+    
+    #plot check
+    ggplot(risk_overall_simple) +
+        geom_line(aes(x=month, y=risk_sum, group=1))
+    
+# Change year and month in respective DF to numeric        
+risk_month_simple$month <- as.numeric(risk_month_simple$month)
+
+risk_year_simple$year <- as.numeric(risk_year_simple$year)
+
+risk_overall_simple$month <- as.numeric(risk_overall_simple$month)
+```
+
+```{r}
+#Create df to check overall risk, no country risk
+    risk_month_nocountry_simple<- results_simpleriskdf
+    risk_month_nocountry_simple <- risk_month_nocountry_simple %>% mutate(month=format(date,"%m"))
+    risk_month_nocountry_simple <- risk_month_nocountry_simple %>% group_by(month) %>% summarise(risk_sum=sum(risk_pmedian, na.rm = TRUE), risk_mean=mean(risk_pmedian, na.rm = TRUE), risk_med=median(risk_pmedian, na.rm = TRUE), risk_sd=sd(risk_pmedian, na.rm = TRUE)) %>%
+      data.frame()
+
+#plot
+ggplot(risk_month_nocountry_simple) +
+        geom_line(aes(x=month, y=risk_med-risk_sd, group=1), linetype=2) +
+        geom_line(aes(x=month, y=risk_med+risk_sd, group=1), linetype=2) +
+        geom_line(aes(x=month, y=risk_med, group=1)) 
+```
+
+### Plots:
+
+#### Country Bump plots
+
+##### Month
+
+```{r}
+#create ranking from month data and select countries
+ranked8 <- risk_month_simple |> 
+  filter(month %in% c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12) & !Country %in% c("Portugal", "France", "Germany", "Nepal", "Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica", "SouthAmerica", "WestAfrica", "SouthAsia", "median_p", "Caribbean", "SoutheastAsia")) |> 
+  mutate(ranking = rank(desc(risk_sum), ties.method = "first"), .by = month) |> 
+  mutate(ctry = Country)
+geo <- ranked8$Country
+
+selected1 <- c("Brazil", "Angola", "Cuba", "Thailand", "China", "UnitedKingdom")
+
+
+#create plot
+plotmonthcountrysimple <- ranked8 |>
+  ggplot(aes(x = month, y = ranking, group = Country)) +
+  geom_bump(linewidth = 0.6, color = "gray90", smooth = 6) +
+  geom_bump(aes(color = Country), linewidth = 0.8, smooth = 6,
+                    data = ~. |> filter(Country %in% selected1)) +
+  geom_point(color = "white", size = 4) +
+  geom_point(color = "gray90", size = 2) +
+  geom_point(aes(color = Country), size = 2, 
+             data = ~. |> filter(Country %in% selected1)) +
+  geom_text(aes(label = ctry), x = 13, hjust = 0,
+            color = "gray50", family = "Arial", size = 3.5,
+            data = ranked8 |> slice_max(month, by = Country) |> 
+              filter(!Country %in% selected1)) +
+  geom_text(aes(label = ctry), x = 13, hjust = 0,
+            color = "black", family = "Arial", size = 3.5,
+            data = ranked8 |> slice_max(month, by = Country) |> 
+              filter(Country %in% selected1)) +
+  scale_color_manual(values = met.brewer("Juarez")) +
+  scale_x_continuous(limits = c(0.9, 20), expand = c(0.01,0),
+                     breaks =  c(1,2,3,4,5,6,7,8,9,10,11,12)) +
+  scale_y_reverse(breaks = c(25,20,15,10,5,1), expand = c(0.02,0),
+                  labels = number_format(suffix = ".")) +
+  labs(x = NULL, y = NULL,
+       title = toupper("Monthly Cumulative Risk - Linear Model"),
+       subtitle = "",
+       caption = "") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, hjust = .5),
+        plot.subtitle = element_text(size = 10, hjust = .5),
+        plot.caption = element_text(size = 8))
+
+#plot
+plotmonthcountrysimple
+```
+
+##### Year
+
+```{r}
+#create ranking from month data and select countries
+ranked8 <- risk_year_simple |> 
+  filter(year %in% c(2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2021, 2022) & !Country %in% c("Portugal", "France", "Germany", "Nepal", "Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica", "SouthAmerica", "WestAfrica", "SouthAsia", "median_p", "Caribbean", "SoutheastAsia")) |> 
+  mutate(ranking = rank(desc(risk_sum), ties.method = "first"), .by = year) |> 
+  mutate(ctry = Country)
+geo <- ranked8$Country
+
+selected1 <- c("Brazil", "Angola", "Cuba", "Thailand", "China")
+
+#Create plot
+plotyearcountrysimple <- ranked8 |>
+  ggplot(aes(x = year, y = ranking, group = Country)) +
+  geom_bump(linewidth = 0.6, color = "gray90", smooth = 6) +
+  geom_bump(aes(color = Country), linewidth = 0.8, smooth = 6,
+                    data = ~. |> filter(Country %in% selected1)) +
+  geom_point(color = "white", size = 4) +
+  geom_point(color = "gray90", size = 2) +
+  geom_point(aes(color = Country), size = 2, 
+             data = ~. |> filter(Country %in% selected1)) +
+  geom_text(aes(label = ctry), x = 2023, hjust = 0,
+            color = "gray50", family = "Arial", size = 3.5,
+            data = ranked8 |> slice_max(year, by = Country) |> 
+              filter(!Country %in% selected1)) +
+  geom_text(aes(label = ctry), x = 2023, hjust = 0,
+            color = "black", family = "Arial", size = 3.5,
+            data = ranked8 |> slice_max(year, by = Country) |> 
+              filter(Country %in% selected1)) +
+  scale_color_manual(values = met.brewer("Juarez")) +
+  scale_x_continuous(limits = c(2011.9, 2027), expand = c(0.01,0),
+                     breaks =  c(2012, 2017, 2019, 2021, 2022)) +
+  scale_y_reverse(breaks = c(25,20,15,10,5,1), expand = c(0.02,0),
+                  labels = number_format(suffix = ".")) +
+  labs(x = NULL, y = NULL,
+       title = toupper("Yearly Cumulative Risk by Country - Linear"),
+       subtitle = "",
+       caption = "") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, hjust = .5),
+        plot.subtitle = element_text(size = 10, hjust = .5),
+        plot.caption = element_text(size = 8))
+
+#plot
+plotyearcountrysimple
+```
+
+#### Region Bump Plots
+
+##### Month
+
+```{r}
+
+#create ranking from month data and select countries
+ranked6 <- risk_month_simple |> 
+  filter(month %in% c(1,2,3,4,5,6,7,8,9,10,11,12) & Country %in% c( "Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica", "SouthAmerica", "WestAfrica", "SouthAsia", "Caribbean", "SoutheastAsia")) |> 
+  mutate(ranking = rank(desc(risk_sum), ties.method = "first"), .by = month) |> 
+  mutate(ctry = Country)
+geo <- ranked6$Country
+
+#select countries to highlight
+selected5 <- c("SouthAmerica", "Asia", "Africa", "Europe")
+
+#create plot
+plotmonthregionsimple <- ranked6 |>
+  ggplot(aes(x = month, y = ranking, group = Country)) +
+  geom_bump(linewidth = 0.6, color = "gray90", smooth = 6) +
+  geom_bump(aes(color = Country), linewidth = 0.8, smooth = 6,
+                    data = ~. |> filter(Country %in% selected5)) +
+  geom_point(color = "white", size = 4) +
+  geom_point(color = "gray90", size = 2) +
+  geom_point(aes(color = Country), size = 2, 
+             data = ~. |> filter(Country %in% selected5)) +
+  geom_text(aes(label = ctry), x = 13, hjust = 0,
+            color = "gray50", family = "Arial", size = 3.5,
+            data = ranked6 |> slice_max(month, by = Country) |> 
+              filter(!Country %in% selected5)) +
+  geom_text(aes(label = ctry), x = 13, hjust = 0,
+            color = "black", family = "Arial", size = 3.5,
+            data = ranked6 |> slice_max(month, by = Country) |> 
+              filter(Country %in% selected5)) +
+  scale_color_manual(values = met.brewer("Juarez")) +
+  scale_x_continuous(limits = c(0.9, 20), expand = c(0.01,0),
+                     breaks =  c(1,2,3,4,5,6,7,8,9,10,11,12)) +
+  scale_y_reverse(breaks = c(25,20,15,10,5,1), expand = c(0.02,0),
+                  labels = number_format(suffix = ".")) +
+  labs(x = NULL, y = NULL,
+       title = toupper("Monthly Cumulative Risk by Region - Linear"),
+       subtitle = "",
+       caption = "") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, hjust = .5),
+        plot.subtitle = element_text(size = 10, hjust = .5),
+        plot.caption = element_text(size = 8))
+
+#plot
+plotmonthregionsimple
+```
+
+##### Year
+
+```{r}
+
+#create yearly ranking and select countries/ years
+ranked5 <- risk_year_simple |> 
+  filter(year %in% c(2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2021, 2022) & Country %in% c( "Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica", "SouthAmerica", "WestAfrica", "SouthAsia", "Caribbean", "SoutheastAsia")) |> 
+  mutate(ranking = rank(desc(risk_sum), ties.method = "first"), .by = year) |> 
+  mutate(ctry = Country)
+geo <- ranked5$Country
+
+#see above chunk for selected5
+
+#Create plot
+plotyearregionsimple <- ranked5 |>
+  ggplot(aes(x = year, y = ranking, group = Country)) +
+  geom_bump(linewidth = 0.6, color = "gray90", smooth = 6) +
+  geom_bump(aes(color = Country), linewidth = 0.8, smooth = 6,
+                    data = ~. |> filter(Country %in% selected5)) +
+  geom_point(color = "white", size = 4) +
+  geom_point(color = "gray90", size = 2) +
+  geom_point(aes(color = Country), size = 2, 
+             data = ~. |> filter(Country %in% selected5)) +
+  geom_text(aes(label = ctry), x = 2023, hjust = 0,
+            color = "gray50", family = "Arial", size = 3.5,
+            data = ranked5 |> slice_max(year, by = Country) |> 
+              filter(!Country %in% selected5)) +
+  geom_text(aes(label = ctry), x = 2023, hjust = 0,
+            color = "black", family = "Arial", size = 3.5,
+            data = ranked5 |> slice_max(year, by = Country) |> 
+              filter(Country %in% selected5)) +
+  scale_color_manual(values = met.brewer("Juarez")) +
+  scale_x_continuous(limits = c(2011.9, 2027), expand = c(0.01,0),
+                     breaks =  c(2012, 2017, 2019, 2021, 2022)) +
+  scale_y_reverse(breaks = c(25,20,15,10,5,1), expand = c(0.02,0),
+                  labels = number_format(suffix = ".")) +
+  labs(x = NULL, y = NULL,
+       title = toupper("Yearly Comulative Risk by Region"),
+       subtitle = "",
+       caption = "") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, hjust = .5),
+        plot.subtitle = element_text(size = 10, hjust = .5),
+        plot.caption = element_text(size = 8))
+
+#plot
+plotyearregionsimple
+```
+
+##### Map:
+
+```{r}
+#load geo data
+world <- ne_countries(scale = 110, type = "countries", returnclass = "sf")%>%
+  # Convert WGS84 to projected crs
+  sf::st_transform(world_ne, crs="ESRI:54030")
+
+
+#bring in data
+mapdata <- median_df_joined_noCOVID
+
+#bring in risk data
+data1 <- results_simpleriskdf
+
+
+#join risk and flight data
+mapdata1 <- mapdata %>%
+  left_join(data1, by = c("date" = "date", "Country" = "Country"))
+
+#remove regions from data
+mapdata1 <- mapdata1 %>%
+filter(!(Country %in% c("Portugal", "France", "Germany", "Nepal", "Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica","SouthAmerica", "WestAfrica", "SouthAsia", "median_p", "Caribbean", "SoutheastAsia")))
+
+#Change country names to remove spaces so it matches geo data
+mapdata1 <- mapdata1 %>%
+  mutate(Country = ifelse(Country == "DominicanRepublic", "DominicanRepublic", Country))
+mapdata1 <- mapdata1 %>%
+  mutate(Country = ifelse(Country == "UnitedKingdom", "United Kingdom", Country))
+mapdata1 <- mapdata1 %>%
+  mutate(Country = ifelse(Country == "CostaRica", "Costa Rica", Country))
+
+
+#Summarise data by country
+mapdata1 <- mapdata1 %>% 
+  group_by(Country) %>% 
+  summarise(
+    risk_sum = sum(risk_pmedian, na.rm = TRUE),
+    risk_mean = mean(risk_pmedian, na.rm = TRUE),
+    risk_med = median(risk_pmedian, na.rm = TRUE),
+    risk_sd = sd(risk_pmedian, na.rm = TRUE),
+    Transmission_Pot = mean(Transmission_Pot, na.rm = TRUE),  
+    passenger_count = sum(passenger_count, na.rm = TRUE)  
+  ) %>%
+  data.frame()
+
+
+
+
+# Join data to world map
+
+map1 <- world %>%
+  left_join(mapdata1, by = c("name" = "Country"))
+
+
+
+```
+
+Plot map:
+
+```{r}
+ggplot(map1, aes(fill = risk_sum)) +
+  geom_sf(color = "white", size = 0.1) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    na.value = "lightgrey",
+    trans = "log",
+    name = "Log Cummulative Risk"
+  ) +
+  theme_minimal() +
+  labs(title = "Cumulative Risk per Select Country - Linear Method")
+```
+
+## Entropy Risk Calc:
+
+#### By Country
+
+```{r}
+  do_actions_risk<- function(country_label, country_data){
+
+          
+  #Normalize Index P s.t. sum equals 1:
+  country_combined_df <- country_data %>% 
+    mutate(pindexnorm_co =Transmission_Pot/ sum(Transmission_Pot))
+
+  #Check norm worked:
+  print(sum(country_combined_df$pindexnorm_co))
+          
+          
+          
+  #Calcuate H_Country
+
+    country_combined_df <- country_data %>% mutate(hpi =  Transmission_Pot_norm^3 * log(Transmission_Pot_norm))
+    country_Hc <- -sum(country_combined_df$hpi)
+    print(range(country_Hc))
+
+  #Calculate Risk:
+  Overall_risk_co <- (country_Hc)*10^(4) * (median(country_data$passenger_count_norm[country_data$Country == country_label]))
+
+            return(Overall_risk_co)
+        }
+
+  all_countries<- c("Angola","Brazil", "China", "Colombia", "CostaRica", "Cuba", "Dominican Republic", "India", "Indonesia", "Mauritius", "Mexico", "Mozambique", "Myanmar", "Senegal", "Thailand", "Venezuela","Vietnam", "UnitedKingdom")
+        #all_countries<- unique(median_df_joined_noCOVID$Country)
+
+    results_medianrisk_df <- data.frame()
+
+        # Loop over countries
+        for (country_label in all_countries) {
+
+            this_country_df <- median_df_joined_noCOVID %>% filter(Country == country_label)
+            # head(this_country_df)
+            
+            all_dates<-  as.Date(unique(median_df_joined_noCOVID$date), "%Y-%m-%d")
+
+            for (idate in 1:length(all_dates)){
+
+                this_date<- all_dates[idate]
+                
+                ## Filter this country
+                this_year_country_data <- this_country_df %>% filter(date == this_date)
+                head(this_year_country_data)
+                        
+                ##apply method
+                results_median_riskdf <- do_actions_risk(country_label = country_label, country_data = this_year_country_data)
+                            
+                results_medianrisk_df <- rbind( results_medianrisk_df,
+                                                    data.frame(Country = country_label, Overall_risk = results_median_riskdf, date = this_date))
+            }
+        }
+
+
+        results_medianrisk_df <-  results_medianrisk_df %>% mutate(across(where(is.numeric), ~replace_na(., 0)))
+
+
+```
+
+Plot check:
+
+```{r}
+ggplot(results_medianrisk_df) +
+            geom_line(aes(x=date, y=Overall_risk)) + facet_wrap(~Country, scale = "free")
+
+```
+
+Summarize data per time frame:
+
+```{r}
+#summarize per month
+
+    risk_month<- results_medianrisk_df
+    risk_month<- risk_month %>% mutate(month=format(date,"%m"))
+    risk_month<- risk_month %>% group_by(Country, month) %>% summarise(risk_sum=sum(Overall_risk), risk_mean=mean(Overall_risk), risk_med=median(Overall_risk),  risk_sd=sd(Overall_risk)) %>% data.frame() 
+    
+  #plot check
+  ggplot(risk_month) +
+    geom_line(aes(x=month, y=risk_sum, group=1)) + facet_wrap(~Country, scales="free")
+    
+#summarize per year
+
+    risk_year<- results_medianrisk_df
+    risk_year<- risk_year %>% mutate(year=format(date,"%y"))
+    risk_year<- risk_year %>% group_by(Country, year) %>% summarise(risk_sum=sum(Overall_risk), risk_mean=mean(Overall_risk), risk_med=median(Overall_risk),  risk_sd=sd(Overall_risk)) %>% data.frame() 
+    
+        #plot check
+    ggplot(risk_year) +
+        geom_line(aes(x=year, y=risk_sum, group=1)) + facet_wrap(~Country, scales="free")
+
+#Sumarize Overall:
+    
+    risk_over<- results_medianrisk_df
+    risk_over<- risk_over %>% mutate(month=format(date,"%m"))
+    risk_over<- risk_over %>% group_by(month) %>% summarise(risk_sum=sum(Overall_risk), risk_mean=mean(Overall_risk), risk_med=median(Overall_risk),  risk_sd=sd(Overall_risk)) %>% data.frame() 
+    
+    
+  #plot check
+  ggplot(risk_over) +
+    geom_line(aes(x=month, y=risk_sum, group=1))
+
+
+
+
+```
+
+```{r}
+#create df to check risk overall, no country
+    risk_month_nocountry<- results_medianrisk_df
+    risk_month_nocountry<- risk_month_nocountry %>% mutate(month=format(date,"%m"))
+    risk_month_nocountry<- risk_month_nocountry %>% group_by(month) %>% summarise(risk_sum=sum(Overall_risk), risk_mean=mean(Overall_risk), risk_med=median(Overall_risk), risk_sd=sd(Overall_risk)) %>%  data.frame()
+
+#plot
+ggplot(risk_month_nocountry) +
+        geom_line(aes(x=month, y=risk_med-risk_sd, group=1), linetype=2) +
+        geom_line(aes(x=month, y=risk_med+risk_sd, group=1), linetype=2) +
+        geom_line(aes(x=month, y=risk_med, group=1)) 
+```
+
+Risk Calc by region:
+
+```{r}
+  do_actions_risk<- function(country_label, country_data){
+
+    #Normalize Index P s.t. sum equals 1:
+    country_combined_df <- country_data %>% 
+      mutate(pindexnorm_co =Transmission_Pot/ sum(Transmission_Pot))
+
+    #Check norm worked:
+    print(sum(country_combined_df$pindexnorm_co))
+          
+          
+          
+  #Calcuate H_Country
+
+  country_combined_df <- country_data %>% mutate(hpi =  Transmission_Pot_norm^3 * log(Transmission_Pot_norm))
+  country_Hc <- -sum(country_combined_df$hpi)
+  # print(country_Hc)
+
+  #Calculate Risk:
+  Overall_risk_co <- (country_Hc)*10^(4) * (median(country_data$passenger_count_norm[country_data$Country == country_label]))
+
+            return(Overall_risk_co)
+        }
+
+         all_countries1<- c("Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica", "SouthAmerica", "WestAfrica", "SouthAsia", "Caribbean", "SoutheastAsia")
+        #all_countries<- unique(median_df_joined_noCOVID$Country)
+
+        results_regionmedian_riskdf <- data.frame()
+
+        # Loop over countries
+        for (country_label in all_countries1) {
+
+
+
+            this_country_df <- median_df_joined_noCOVID %>% filter(Country == country_label)
+            # head(this_country_df)
+            
+            all_dates<-  as.Date(unique(median_df_joined_noCOVID$date), "%Y-%m-%d")
+
+            for (idate in 1:length(all_dates)){
+
+                this_date<- all_dates[idate]
+                
+            #Filter this country
+            this_year_country_data <- this_country_df %>% filter(date == this_date)
+            head(this_year_country_data)
+                        
+                #apply method
+                results_regionmedian_risk <- do_actions_risk(country_label = country_label, country_data = this_year_country_data)
+                            
+                results_regionmedian_riskdf <- rbind( results_regionmedian_riskdf,
+                                                    data.frame(Country = country_label, Overall_risk = results_regionmedian_risk, date = this_date))
+            }
+        }
+
+
+results_regionmedian_riskdf <-  results_regionmedian_riskdf %>% mutate(across(where(is.numeric), ~replace_na(., 0)))
+
+```
+
+Join country and region:
+
+```{r}
+
+entropyjoined <- bind_rows(results_medianrisk_df, results_regionmedian_riskdf)
+
+
+#summarize by month:
+
+risk_month_all_entropy<- entropyjoined
+risk_month_all_entropy<- risk_month_all_entropy %>% mutate(month=format(date,"%m"))
+risk_month_all_entropy<- risk_month_all_entropy %>% group_by(Country, month) %>% summarise(risk_sum=sum(Overall_risk), risk_mean=mean(Overall_risk), risk_med=median(Overall_risk),  risk_sd=sd(Overall_risk)) %>% data.frame() 
+```
+
+Summarize by time frame:
+
+```{r}
+#### summarize per month
+
+  risk_month_region<- results_regionmedian_riskdf
+  risk_month_region<- risk_month_region %>% mutate(month=format(date,"%m"))
+  risk_month_region<- risk_month_region %>% group_by(Country, month) %>% summarise(risk_sum=sum(Overall_risk), risk_mean=mean(Overall_risk), risk_med=median(Overall_risk),  risk_sd=sd(Overall_risk)) %>% data.frame() 
+    
+  #plot check
+  ggplot(risk_month_region) +
+    geom_line(aes(x=month, y=risk_sum, group=1)) + facet_wrap(~Country, scales="free")
+    
+### summarize per year
+
+
+  risk_year_region<- results_regionmedian_riskdf
+  risk_year_region<- risk_year_region %>% mutate(year=format(date,"%y"))
+  risk_year_region<- risk_year_region %>% group_by(Country, year) %>% summarise(risk_sum=sum(Overall_risk), risk_mean=mean(Overall_risk), risk_med=median(Overall_risk),  risk_sd=sd(Overall_risk)) %>% data.frame() 
+    
+    
+  #plot check
+  ggplot(risk_year_region) +
+    geom_line(aes(x=year, y=risk_sum, group=1)) + facet_wrap(~Country, scales="free")
+
+```
+
+### Plots
+
+#### Monthly Plots:
+
+```{r}
+#change risk_month$month to numerica
+
+risk_month$month <- as.numeric(risk_month$month)
+
+risk_month_region$month <- as.numeric(risk_month_region$month)
+```
+
+Country Bump plots:
+
+```{r}
+ranked1 <- risk_month |> 
+  filter(month %in% c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12) & !Country %in% c("Portugal", "France", "Germany", "Nepal", "Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica", "SouthAmerica", "WestAfrica", "SouthAsia", "median_p", "Caribbean", "SoutheastAsia")) |> 
+  mutate(ranking = rank(desc(risk_sum), ties.method = "first"), .by = month) |> 
+  mutate(ctry = Country)
+geo <- ranked1$Country
+
+selected1 <- c("Brazil", "Angola", "Cuba", "Thailand", "China", "UnitedKingdom")
+```
+
+```{r}
+plotmonthlycountry <- ranked1 |>
+  ggplot(aes(x = month, y = ranking, group = Country)) +
+  geom_bump(linewidth = 0.6, color = "gray90", smooth = 6) +
+  geom_bump(aes(color = Country), linewidth = 0.8, smooth = 6,
+                    data = ~. |> filter(Country %in% selected1)) +
+  geom_point(color = "white", size = 4) +
+  geom_point(color = "gray90", size = 2) +
+  geom_point(aes(color = Country), size = 2, 
+             data = ~. |> filter(Country %in% selected1)) +
+  geom_text(aes(label = ctry), x = 13, hjust = 0,
+            color = "gray50", family = "Arial", size = 3.5,
+            data = ranked1 |> slice_max(month, by = Country) |> 
+              filter(!Country %in% selected1)) +
+  geom_text(aes(label = ctry), x = 13, hjust = 0,
+            color = "black", family = "Arial", size = 3.5,
+            data = ranked1 |> slice_max(month, by = Country) |> 
+              filter(Country %in% selected1)) +
+  scale_color_manual(values = met.brewer("Juarez")) +
+  scale_x_continuous(limits = c(0, 20), expand = c(0.01,0),
+                     breaks = c(1, 3, 8, 12)) +
+  scale_y_reverse(breaks = c(25,20,15,10,5,1), expand = c(0.02,0),
+                  labels = number_format(suffix = ".")) +
+  labs(x = NULL, y = NULL,
+       title = toupper("Monthly Cumulative Risk - Weighted Entropy Model"),
+       subtitle = "",
+       caption = "tbd") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, hjust = .5),
+        plot.subtitle = element_text(size = 10, hjust = .5),
+        plot.caption = element_text(size = 8))
+
+plotmonthlycountry
+```
+
+Monthly Region Plots:
+
+```{r}
+ranked2 <- risk_month_region |> 
+  filter(month %in% c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12) & Country %in% c( "Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica", "SouthAmerica", "WestAfrica", "SouthAsia", "Caribbean", "SoutheastAsia")) |> 
+  mutate(ranking = rank(desc(risk_sum), ties.method = "first"), .by = month) |> 
+  mutate(ctry = Country)
+geo <- ranked2$Country
+
+selected2 <- c("SouthAmerica", "Asia", "Africa", "Europe")
+
+
+plotmonthlyregion <- ranked2 |>
+  ggplot(aes(x = month, y = ranking, group = Country)) +
+  geom_bump(linewidth = 0.6, color = "gray90", smooth = 6) +
+  geom_bump(aes(color = Country), linewidth = 0.8, smooth = 6,
+                    data = ~. |> filter(Country %in% selected2)) +
+  geom_point(color = "white", size = 4) +
+  geom_point(color = "gray90", size = 2) +
+  geom_point(aes(color = Country), size = 2, 
+             data = ~. |> filter(Country %in% selected2)) +
+  geom_text(aes(label = ctry), x = 13, hjust = 0,
+            color = "gray50", family = "Arial", size = 3.5,
+            data = ranked2 |> slice_max(month, by = Country) |> 
+              filter(!Country %in% selected2)) +
+  geom_text(aes(label = ctry), x = 13, hjust = 0,
+            color = "black", family = "Arial", size = 3.5,
+            data = ranked2 |> slice_max(month, by = Country) |> 
+              filter(Country %in% selected2)) +
+  scale_color_manual(values = met.brewer("Juarez")) +
+  scale_x_continuous(limits = c(0, 20), expand = c(0.01,0),
+                     breaks = c(1, 3, 8, 12)) +
+  scale_y_reverse(breaks = c(25,20,15,10,5,1), expand = c(0.02,0),
+                  labels = number_format(suffix = ".")) +
+  labs(x = NULL, y = NULL,
+       title = toupper("Monthly Overall Risk by Region - Logarithm"),
+       subtitle = "",
+       caption = "") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, hjust = .5),
+        plot.subtitle = element_text(size = 10, hjust = .5),
+        plot.caption = element_text(size = 8))
+
+plotmonthlyregion
+```
+
+#### Yearly plots:
+
+By country plot:
+
+```{r}
+
+#reformat year as factor
+
+risk_year$year <- as.numeric(risk_year$year)
+
+risk_year_region$year <- as.numeric(risk_year_region$year)
+
+#create ranked list:
+ranked3 <- risk_year |> 
+  filter(year %in% c(12, 13, 14, 15, 16, 17, 18, 19, 21, 22) & !Country %in% c("Portugal", "France", "Germany", "Nepal", "Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica", "SouthAmerica", "WestAfrica", "SouthAsia", "median_p", "Caribbean", "SoutheastAsia")) |> 
+  mutate(ranking = rank(desc(risk_sum), ties.method = "first"), .by = year) |> 
+  mutate(ctry = Country)
+geo <- ranked3$Country
+
+#select highlighted countries:
+selected3 <- c("Brazil", "Angola", "Cuba", "Thailand", "China")
+```
+
+```{r}
+#plot bump plot:
+plotyearcountry <- ranked3 |>
+  ggplot(aes(x = year, y = ranking, group = Country)) +
+  geom_bump(linewidth = 0.6, color = "gray90", smooth = 6) +
+  geom_bump(aes(color = Country), linewidth = 0.8, smooth = 6,
+                    data = ~. |> filter(Country %in% selected3)) +
+  geom_point(color = "white", size = 4) +
+  geom_point(color = "gray90", size = 2) +
+  geom_point(aes(color = Country), size = 2, 
+             data = ~. |> filter(Country %in% selected3)) +
+  geom_text(aes(label = ctry), x = 23, hjust = 0,
+            color = "gray50", family = "Arial", size = 3.5,
+            data = ranked3 |> slice_max(year, by = Country) |> 
+              filter(!Country %in% selected3)) +
+  geom_text(aes(label = ctry), x = 23, hjust = 0,
+            color = "black", family = "Arial", size = 3.5,
+            data = ranked3 |> slice_max(year, by = Country) |> 
+              filter(Country %in% selected3)) +
+  scale_color_manual(values = met.brewer("Juarez")) +
+  scale_x_continuous(limits = c(11.9, 27), expand = c(0.01,0),
+                     breaks = c(12, 17, 19, 21, 22)) +
+  scale_y_reverse(breaks = c(25,20,15,10,5,1), expand = c(0.02,0),
+                  labels = number_format(suffix = ".")) +
+  labs(x = NULL, y = NULL,
+       title = toupper("Yearly Overall Risk by Country - Entropy "),
+       subtitle = "",
+       caption = "") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, hjust = .5),
+        plot.subtitle = element_text(size = 10, hjust = .5),
+        plot.caption = element_text(size = 8))
+
+plotyearcountry
+```
+
+By region bump plot:
+
+```{r}
+ranked4 <- risk_year_region |> 
+  filter(year %in% c(12, 13, 14, 15, 16, 17, 18, 19, 21, 22) & Country %in% c( "Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica", "SouthAmerica", "WestAfrica", "SouthAsia", "Caribbean", "SoutheastAsia")) |> 
+  mutate(ranking = rank(desc(risk_sum), ties.method = "first"), .by = year) |> 
+  mutate(ctry = Country)
+geo <- ranked1$Country
+
+#set highlighted countries
+selected4 <- c("SouthAmerica", "Asia", "Africa", "Europe")
+
+#plot
+plotyearregion <- ranked4 |>
+  ggplot(aes(x = year, y = ranking, group = Country)) +
+  geom_bump(linewidth = 0.6, color = "gray90", smooth = 6) +
+  geom_bump(aes(color = Country), linewidth = 0.8, smooth = 6,
+                    data = ~. |> filter(Country %in% selected4)) +
+  geom_point(color = "white", size = 4) +
+  geom_point(color = "gray90", size = 2) +
+  geom_point(aes(color = Country), size = 2, 
+             data = ~. |> filter(Country %in% selected4)) +
+  geom_text(aes(label = ctry), x = 23, hjust = 0,
+            color = "gray50", family = "Arial", size = 3.5,
+            data = ranked4 |> slice_max(year, by = Country) |> 
+              filter(!Country %in% selected4)) +
+  geom_text(aes(label = ctry), x = 23, hjust = 0,
+            color = "black", family = "Arial", size = 3.5,
+            data = ranked4 |> slice_max(year, by = Country) |> 
+              filter(Country %in% selected4)) +
+  scale_color_manual(values = met.brewer("Juarez")) +
+  scale_x_continuous(limits = c(11.9, 27), expand = c(0.01,0),
+                     breaks =  c(12, 17, 19, 21, 22)) +
+  scale_y_reverse(breaks = c(25,20,15,10,5,1), expand = c(0.02,0),
+                  labels = number_format(suffix = ".")) +
+  labs(x = NULL, y = NULL,
+       title = toupper("Yearly Comulative Risk by Country"),
+       subtitle = "",
+       caption = "") +
+  theme_minimal(base_family = "Arial", base_size = 12) +
+  theme(legend.position = "none",
+        panel.grid = element_blank(),
+        plot.title.position = "plot",
+        plot.title = element_text(size = 14, hjust = .5),
+        plot.subtitle = element_text(size = 10, hjust = .5),
+        plot.caption = element_text(size = 8))
+
+plotyearregion 
+```
+
+#### Bubble plot:
+
+```{r}
+
+#set df for bubbleplot data
+bubbleplotdata <- median_df_joined_noCOVID
+
+data <-results_regionmedian_riskdf 
+
+#join dfs with overall and risk data
+bubbleplotdata <- bubbleplotdata %>%
+  left_join(data, by = c("date" = "date", "Country" = "Country"))
+
+#remove regions
+bubbleplotdata <- bubbleplotdata %>%
+  filter(Country %in% c("Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica", "SouthAmerica", "WestAfrica", "SouthAsia", "median_p", "Caribbean", "SoutheastAsia"))
+
+
+#set data by reporting metric
+bubbleplotdata <- bubbleplotdata %>% 
+  group_by(Country, year) %>% 
+  summarise(
+    risk_sum = sum(Overall_risk, na.rm = TRUE),
+    risk_mean = mean(Overall_risk, na.rm = TRUE),
+    risk_med = median(Overall_risk, na.rm = TRUE),
+    risk_sd = sd(Overall_risk, na.rm = TRUE),
+    Transmission_Pot = mean(Transmission_Pot, na.rm = TRUE),  # Aggregating by mean (or change to sum, etc.)
+    passenger_count = sum(passenger_count, na.rm = TRUE)  # Aggregating by sum (or change to mean, etc.)
+  ) %>%
+  data.frame()
+
+#set country column
+bubbleplotdata$Country1 <- bubbleplotdata$Country
+
+bubbleplotdata$Country <- paste(bubbleplotdata$Country,bubbleplotdata$year)
+```
+
+```{r}
+
+#Save plot as png
+png("bubbleplot.png", width = 1600, height = 1600, res = 150)
+
+#plot
+bubbleplotdata %>%
+  arrange(desc(risk_sum)) %>%
+  mutate(Country = factor(Country)) %>%
+  ggplot(aes(x = passenger_count, 
+             y = Transmission_Pot, 
+             size = risk_sum, 
+             color = Country)) +
+  geom_point(alpha = 0.5) +
+  scale_size(range = c(0.1, 24), name = "Yearly Cumulative Risk") +
+  scale_x_continuous(trans = "log10")+
+  scale_color_discrete(guide = "none") +  
+  facet_wrap(~Country1, scales = "free")+
+   labs(y = "Baseline Index P", x = "Baseline Passenger Counts")
+dev.off()
+
+```
+
+#### Map:
+
+```{r}
+
+
+#load geo data
+world <- ne_countries(scale = 110, type = "countries", returnclass = "sf")%>%
+  # Convert WGS84 to projected crs
+  sf::st_transform(world_ne, crs="ESRI:54030")
+
+
+#bring in flight data
+mapdata <- median_df_joined_noCOVID
+
+#bring in entropy risk data
+data <- results_medianrisk_df
+
+
+#join risk and flight data
+mapdata <- mapdata %>%
+  left_join(data, by = c("date" = "date", "Country" = "Country"))
+
+#remove regions from data
+mapdata <- mapdata %>%
+filter(!(Country %in% c("Portugal", "France", "Germany", "Nepal", "Africa", "Americas", "Europe", "CentralAmerica", "EastAfrica", "EastAsia", "Asia", "MiddleAfrica","SouthAmerica", "WestAfrica", "SouthAsia", "median_p", "Caribbean", "SoutheastAsia")))
+
+#Change country names to remove spaces so it matches geo data
+mapdata <- mapdata %>%
+  mutate(Country = ifelse(Country == "DominicanRepublic", "DominicanRepublic", Country))
+mapdata <- mapdata %>%
+  mutate(Country = ifelse(Country == "UnitedKingdom", "United Kingdom", Country))
+mapdata <- mapdata %>%
+  mutate(Country = ifelse(Country == "CostaRica", "Costa Rica", Country))
+
+
+#Summarise data by country
+mapdata <- mapdata %>% 
+  group_by(Country) %>% 
+  summarise(
+    risk_sum = sum(Overall_risk, na.rm = TRUE),
+    risk_mean = mean(Overall_risk, na.rm = TRUE),
+    risk_med = median(Overall_risk, na.rm = TRUE),
+    risk_sd = sd(Overall_risk, na.rm = TRUE),
+    Transmission_Pot = mean(Transmission_Pot, na.rm = TRUE),  
+    passenger_count = sum(passenger_count, na.rm = TRUE)  
+  ) %>%
+  data.frame()
+
+
+
+
+# Join data to world map
+
+map <- world %>%
+  left_join(mapdata, by = c("name" = "Country"))
+
+
+
+```
+
+```{r}
+
+#plot map
+ggplot(map, aes(fill = risk_sum)) +
+  geom_sf(color = "white", size = 0.1) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    na.value = "lightgrey",
+    trans = "log",
+    name = "Log Cummulative Risk"
+  ) +
+  theme_minimal() +
+  labs(title = "Overall Risk per Select Country - Weighted-entropy Method")
+```
+
+## Wastewater Analysis
+
+```{r}
+# extract waste water period 
+
+wwdata_month <- wwdata %>% mutate(month=as.numeric(format(as.Date(month_year,"%Y-%m-%d"),"%m"))) %>% select(-month_year)
+    
+ggplot(wwdata_month) +
+  geom_point(aes(x=month, y=DENV))+
+    theme_minimal() +
+    labs(title = "Dengue Wastewater RNA Data")
+```
+
+Entropy:
+
+```{r}
+
+#Merge risk data and wastewater data:
+
+risk_ww_month<- wwdata_month %>% left_join(risk_month_all_entropy %>% mutate(month=as.numeric(month)), by="month") 
+
+#plot wastewater DENV RNA findings vs risk summaries:  
+
+g1<- ggplot(risk_ww_month) +
+        geom_point(aes(x=risk_sum, y=log10(1+DENV), group=1)) + facet_wrap(~Country, scales="free")
+
+g2<- ggplot(risk_ww_month) +
+        geom_point(aes(x=risk_mean, y=log10(1+DENV), group=1)) + facet_wrap(~Country, scales="free")
+
+g3<- ggplot(risk_ww_month) +
+        geom_point(aes(x=risk_med, y=log10(1+DENV), group=1)) + facet_wrap(~Country, scales="free")
+
+g2
+g1
+g3
+
+
+```
+
+```{r}
+# extract waste water period overall risk
+
+    ww_data <- wwdata %>% rename(date="month_year") %>% mutate(date=as.Date(date,"%Y-%m-%d")-13)
+    risk_ww <- ww_data %>% left_join(results_medianrisk_df, by="date") %>% filter(!is.na(Overall_risk))
+
+    ggplot(risk_ww) +
+        geom_point(aes(x=Overall_risk, y=log10(1+DENV), group=1)) + facet_wrap(~Country, scales="free")
+```
+
+Statistical testing:
+
+```{r}
+
+#Run correlation testing: spearman
+
+corr_results <- map_dfr(unique(risk_ww_month$Country), function(this_country) {
+  df_subset <- filter(risk_ww_month, Country == this_country)
+  test_result <- cor.test(log10(1 + df_subset$DENV), df_subset$risk_med, method = "spearman")
+  
+  tibble(
+    Country = this_country,
+    Spearman_corr = test_result$estimate,
+    p_value = test_result$p.value,
+    Significance = ifelse(test_result$p.value < 0.05, "Significant", "Not Significant")
+    
+  )
+})
+
+
+
+#Plot spearman results
+
+logcorr <- ggplot(corr_results, aes(y = Country, x = Spearman_corr)) +
+  geom_point(size = 3) +
+  geom_text(aes(label = round(Spearman_corr, 2)), vjust = -0.5, color = "black") +
+  labs(
+    title = "Spearman's Correlation by Country Weighted Entropy Method",
+    x = "Correlation Coefficient",
+    y = "Country/ Region"
+  ) +
+  scale_color_manual(values = c("Significant" = "blue", "Not Significant" = "gray")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.margin = margin(t = 0, b = 20, r = 20, l = 20), 
+    plot.title = element_text(size = 12, hjust = 0, vjust = 1)  
+  ) +
+  coord_cartesian(clip = "off")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red")
+
+logcorr
+```
+
+Overall:
+
+```{r}
+#Merge risk data and wastewater data:
+risk_ww_overall <- wwdata_month %>% left_join(risk_over %>% mutate(month=as.numeric(month)), by="month") 
+#plot wastewater DENV RNA findings vs risk summeries:  
+
+g13<- ggplot(risk_ww_overall) +
+        geom_point(aes(x=risk_sum, y=log10(1+DENV))) 
+
+g14<- ggplot(risk_ww_overall) +
+        geom_point(aes(x=risk_mean, y=log10(1+DENV))) 
+
+g15<- ggplot(risk_ww_overall) +
+        geom_point(aes(x=risk_med, y=log10(1+DENV))) 
+
+g13
+g14
+g15
+```
+
+```{r}
+# Spearman correlation test
+spearman_result <- cor.test(risk_ww_overall$risk_sum, risk_ww_overall$DENV, method = "spearman")
+```
+
+```{r}
+#plot spearman
+overalllogspearplot <- ggplot(risk_ww_overall, aes(x = month)) +
+  geom_line(aes(y = risk_sum, color = "Overall Risk"), size = 1) +
+  geom_point(aes(y = (DENV)/2000, color = "Wastewater RNA"), size = 4, shape = 21, fill = "navyblue") +
+  labs(
+    title = "Monthly Weighted Entropy Model Risk vs. Wastewater RNA Levels",
+    subtitle = paste0("Spearman ρ = ", round(spearman_result$estimate, 2),
+                      ", p = ", signif(spearman_result$p.value, 2)),
+    x = "Month",
+    y = "DENV/2000",
+    color = "Legend"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+overalllogspearplot
+```
+
+Direct:
+
+```{r}
+
+#Merge risk data and wastewater data:
+risk_ww_month_simple <- wwdata_month %>% left_join(risk_month_simple %>% mutate(month=as.numeric(month)), by="month") 
+#plot wastewater DENV RNA findings vs risk summeries:  
+
+g4<- ggplot(risk_ww_month_simple) +
+        geom_point(aes(x=risk_sum, y=log10(1+DENV), group=1)) + facet_wrap(~Country, scales="free")
+
+g5<- ggplot(risk_ww_month_simple) +
+        geom_point(aes(x=risk_mean, y=log10(1+DENV), group=1)) + facet_wrap(~Country, scales="free")
+
+g6<- ggplot(risk_ww_month_simple) +
+        geom_point(aes(x=risk_med, y=log10(1+DENV), group=1)) + facet_wrap(~Country, scales="free")
+
+g4
+g5
+g6
+```
+
+```{r}
+# extract waste water period overall risk
+
+    ww_data_simple <- wwdata %>% rename(date="month_year") %>% mutate(date=as.Date(date,"%Y-%m-%d")-13)
+    risk_ww_simple <- ww_data_simple %>% left_join(results_simpleriskdf, by="date") %>% filter(!is.na(risk_pmedian))
+
+    ggplot(risk_ww_simple) +
+        geom_point(aes(x=risk_pmedian, y=log10(1+DENV), group=1)) + facet_wrap(~Country, scales="free")
+```
+
+Run correlation analysis:
+
+```{r}
+#Run correlation testing: spearman
+
+corr_results_simple <- map_dfr(unique(risk_ww_month_simple$Country), function(this_country) {
+  df_subset_simple <- filter(risk_ww_month_simple, Country == this_country)
+  test_result_simple <- cor.test(log10(1 + df_subset_simple$DENV), df_subset_simple$risk_med, method = "spearman")
+  
+  tibble(
+    Country = this_country,
+    Spearman_corr = test_result_simple$estimate,
+    p_value = test_result_simple$p.value
+  )
+})
+
+#Plot spearman results
+
+simplecorr <- ggplot(corr_results_simple, aes(y = Country, x = Spearman_corr)) +
+  geom_point(size = 3) +
+  geom_text(aes(label = round(Spearman_corr, 2)), vjust = -0.5, color = "black") +
+  labs(
+    title = "Spearman's Correlation by Country Linear Method",
+    x = "Correlation Coefficient",
+    y = "Country/ Region"
+  ) +
+  scale_color_manual(values = c("Significant" = "blue", "Not Significant" = "gray")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  coord_cartesian(clip = "off")+
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red")
+
+simplecorr
+```
+
+Overall monthly risk:
+
+```{r}
+#Merge risk data and wastewater data:
+risk_ww_overall_simple <- wwdata_month %>% left_join(risk_overall_simple %>% mutate(month=as.numeric(month)), by="month") 
+#plot wastewater DENV RNA findings vs risk summeries:  
+
+g10<- ggplot(risk_ww_overall_simple) +
+        geom_point(aes(x=risk_sum, y=log10(1+DENV), group=1)) 
+
+g11<- ggplot(risk_ww_month_simple) +
+        geom_point(aes(x=risk_mean, y=log10(1+DENV), group=1)) 
+
+g12<- ggplot(risk_ww_month_simple) +
+        geom_point(aes(x=risk_med, y=log10(1+DENV), group=1)) 
+
+g10
+g11
+g12
+```
+
+```{r}
+# Spearman correlation test
+spearman_result <- cor.test(risk_ww_overall_simple$risk_sum, risk_ww_overall_simple$DENV, method = "spearman")
+
+
+```
+
+```{r}
+#plot spearman
+overalllinearspearplot <- ggplot(risk_ww_overall_simple, aes(x = month)) +
+  geom_line(aes(y = risk_sum, color = "Cumultive Risk"), size = 1) +
+  geom_point(aes(y = DENV, color = "Wastewater RNA"), size = 4, shape = 24, fill = "navyblue") +
+  labs(
+    title = "Monthly Linear Model Risk vs. Wastewater RNA Levels",
+    subtitle = paste0("Spearman ρ = ", round(spearman_result$estimate, 2),
+                      ", p = ", signif(spearman_result$p.value, 2)),
+    x = "Month",
+    y = "DENV",
+    colour = "Legend"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+overalllinearspearplot
+```
+
+## Sensitivity Analysis:
+
+### Direct Risk:
+
+```{r}
+#Create df of theoretical index p and passenger count ranges for sensitivity analysis:
+
+transmission_pot_seq <- seq(0, 1, by = 0.01)
+passenger_count_seq <- seq(0, 1204203, by = 50000)
+
+
+
+rangeanalysis_df <- expand.grid(
+  Transmission_Pot = transmission_pot_seq,
+  passenger_count = passenger_count_seq
+)
+
+#Normalize passenger count data:
+rangeanalysis_df$passenger_count <-( rangeanalysis_df$passenger_count/ (max(rangeanalysis_df$passenger_count)))
+
+#format date column
+rangeanalysis_df$date <- as.Date("2020-01-01")
+
+#Give name to our made-up country
+rangeanalysis_df$Country <- "Genovia"
+```
+
+```{r}
+ #Normalize by max
+    rangeanalysis_df$passenger_count <- ( rangeanalysis_df$passenger_count/max( rangeanalysis_df$passenger_count))
+    rangeanalysis_df$pindexnorm_gv <- (rangeanalysis_df$Transmission_Pot/max(rangeanalysis_df$Transmission_Pot))
+
+#Check norm worked:
+print(sum(rangeanalysis_df$pindexnorm_gv))
+
+
+#Calculate Risk:
+
+    #Passenger count influence
+    Kb<- (mean(rangeanalysis_df$passenger_count))
+            
+    risk_pmedian_co <- rangeanalysis_df$passenger_count*rangeanalysis_df$pindexnorm_gv
+  
+    rangeanalysis_df <- rangeanalysis_df %>%
+      mutate(ithrisk =  abs(rangeanalysis_df$passenger_count * rangeanalysis_df$pindexnorm_gv *1))
+
+Overall_risk_gv <- abs(rangeanalysis_df$passenger_count* rangeanalysis_df$pindexnorm_gv)
+
+print(Overall_risk_gv)
+```
+
+Heat plot:
+
+```{r}
+# Ensure risk is numeric
+rangeanalysis_df$ithrisk <- as.numeric(rangeanalysis_df$ithrisk)
+
+# Create binned copy
+rangeanalysis_df_bin <- rangeanalysis_df
+rangeanalysis_df_bin$ithrisk <- cut(rangeanalysis_df_bin$ithrisk, breaks = 7)
+
+# Make plot
+linearsensitivity <- ggplot(rangeanalysis_df_bin, aes(x = passenger_count, y = Transmission_Pot, fill = ithrisk)) +
+  geom_tile() +
+  labs(
+    title = "Linear Model",
+    x = "Passenger Count (in Mil.)", 
+    y = "Index P", 
+    fill = "Risk"
+  ) +
+  scale_fill_viridis_d(option = "A", direction = -1) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+linearsensitivity
+```
+
+### Entropy-based risk:
+
+```{r}
+
+rangeanalysis_df_entropy <- rangeanalysis_df
+
+#Normalize Index P s.t. sum equals 1:
+rangeanalysis_df_entropy <- rangeanalysis_df_entropy %>%
+   mutate(pindexnorm_gv = rangeanalysis_df_entropy$Transmission_Pot/ sum(rangeanalysis_df_entropy$Transmission_Pot))
+
+
+#Check norm worked:
+print(sum(rangeanalysis_df_entropy$pindexnorm))
+
+
+#Calcuate H_country
+
+rangeanalysis_df_entropy <- rangeanalysis_df_entropy %>%
+  mutate(hpi =  abs(pindexnorm_gv^3 * log(pindexnorm_gv+0.00000000001)))
+
+Genovia_Hc <- -sum(rangeanalysis_df_entropy$hpi)
+
+
+
+
+
+#Calculate Risk:
+
+rangeanalysis_df_entropy <- rangeanalysis_df_entropy %>%
+  mutate(ithrisk =  (rangeanalysis_df_entropy$hpi * (rangeanalysis_df_entropy$passenger_count)))
+
+
+```
+
+Heat map of sensitivity analysis:
+
+```{r}
+
+
+```
+
+```{r}
+
+# Ensure risk is numeric
+rangeanalysis_df_entropy$ithrisk <- as.numeric(rangeanalysis_df_entropy$ithrisk)
+
+# Create a binned copy
+rangeanalysis_df_entropy_bin <- rangeanalysis_df_entropy
+rangeanalysis_df_entropy_bin$ithrisk <- cut(rangeanalysis_df_entropy_bin$ithrisk, breaks = 7)
+
+#Heat map of sensitivity analysis:
+
+entropysensitivity <- ggplot(rangeanalysis_df_entropy_bin, aes(x = passenger_count, y = Transmission_Pot, fill = ithrisk)) +
+  geom_tile() +
+  labs(
+    title = "Weighted Entropy Model",
+    x = "Passenger Count (in Mil.)", 
+    y = "Index P", 
+    fill = "Risk"
+  ) +
+  scale_fill_viridis_d(option = "A", direction = -1) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+entropysensitivity
+```
+
+Extract diagonals for both methods:
+
+```{r}
+#make df with values in the diagonal where passenger count = index p for entropy model
+
+diagonal_df_entropy <- rangeanalysis_df_entropy %>%
+  filter(passenger_count == Transmission_Pot) %>%
+  arrange(Transmission_Pot)
+
+#remove hpi column to make it the same size as the linear one
+diagonal_df_entropy <- diagonal_df_entropy %>% select(-hpi)
+
+
+#create df with values in the diagonal for linear model
+diagonal_df_linear <- rangeanalysis_df %>%
+  filter(passenger_count == Transmission_Pot) %>%
+  arrange(Transmission_Pot)
+
+
+
+# Plot the diagonal line
+ggplot(diagonal_df_entropy, aes(x = Transmission_Pot, y = (ithrisk))) +
+  geom_line() +
+  labs(title = "Risk along diagonal (Transmission Potential = Normalized Passenger Count)",
+       x = "Index P = Travel",
+       y = "Risk") +
+  theme_minimal()
+
+
+```
+
+```{r}
+
+#create column with model type
+diagonal_df_entropy$model <- "entropy"
+
+diagonal_df_linear$model <- "linear"
+
+#joing both diagonal dfs previously made
+
+combined_df <- rbind(diagonal_df_entropy, diagonal_df_linear)
+
+#create plot
+
+ggplot(combined_df, aes(x = Transmission_Pot, y = ithrisk)) +
+  geom_line(color = "navyblue", size = 1) +
+  facet_wrap(~model, scales = "free_y") +
+  labs(title = "Risk along Diagonal (Index P = Air Passenger Count)",
+       x = "Index P = Travel (normalized)",
+       y = "Risk") +
+  theme_minimal()
+```
+
+## Write-up graphs:
+
+Initial code from some graphs from R Graph Gallery later modified for this project.
+
+Create joined graph of yearly bump plots by country by both methods:
+
+```{r}
+
+#Save plot as png
+png("yearlycountrybumps.png", width = 2000, height = 800, res = 150)
+
+grid.arrange(plotyearcountry, plotyearcountrysimple, ncol = 2)
+
+dev.off()
+
+```
+
+Create joined graph of monthly bump plots by country by both methods:
+
+```{r}
+
+#Save plot as png
+png("monthlycountrybumps.png", width = 2000, height = 800, res = 150)
+
+grid.arrange(plotmonthlycountry,plotmonthcountrysimple, ncol = 2)
+
+dev.off()
+```
+
+Create joined graph of sensitivity analysis:
+
+```{r}
+
+#Save plot as png
+png("sensitivity.png", width = 2000, height = 800, res = 150)
+
+grid.arrange(entropysensitivity, linearsensitivity, ncol = 2)
+
+dev.off()
+```
+
+Create joined graph of Spearman Analysis:
+
+```{r}
+#Save plot as png
+png("validation.png", width = 2000, height = 800, res = 150)
+
+grid.arrange(logcorr, simplecorr, ncol = 2)
+
+dev.off()
+```
+
+Create joined graph of Overall Spearman Analysis:
+
+```{r}
+#Save plot as png
+png("overallvalidation.png", width = 2000, height = 1000, res = 150)
+
+grid.arrange(overalllogspearplot, overalllinearspearplot, ncol = 2)
+
+dev.off()
+```
+
+Plot of modified entropy vs regular between \[0,1\]
+
+```{r}
+
+#set range for x
+x <- seq(0.01, 1, length.out = 1000)
+
+#deifne df
+df <- data.frame(
+  x = x,
+  Original = -x * log(x),
+  Weighted = -x^3 * log(x)
+)
+
+# format long
+df_long <- pivot_longer(df, cols = c("Original", "Weighted"),
+                        names_to = "Function", values_to = "y")
+
+# Plot
+ggplot(df_long, aes(x = x, y = y, color = Function)) +
+  geom_line(size = 1) +
+  geom_vline(xintercept = 0.38, linetype = "dashed", color = "navy") +
+  geom_vline(xintercept = 0.716531, linetype = "dashed", color = "maroon") +
+  annotate("text", x = 0.38, y = 0.3, label = "Maxima ~ 0.38", hjust = -0.1, color = "navy") +
+  annotate("text", x = 0.716531, y = 0.3, label = "Maxima ~ 0.71", hjust = -0.1, color = "maroon") +
+  scale_color_manual(values = c("Original" = "navy", "Weighted" = "maroon")) +
+  labs(
+    title = "Entropy Curve Comparison: Original vs Exponent-Weighted",
+    x = "ith Index P value",
+    y = "ith risk"
+  ) +
+  theme_minimal(base_size = 12)
+
+```
+
+```{r}
+#plot Venezuela Index P as a check
+
+#plot(y = Venezuela_medians$Venezuela_median_p, x=Venezuela_medians$date)
+
+ggplot(Venezuela_medians, aes(x = date, y = Venezuela_median_p))+
+  geom_line()+
+  theme_minimal(base_size = 12)
+  
+```
+
+Dendrogram:
+
+```{r}
+# Create a dendrogram:
+
+ 
+
+dendata <- median_df_joined
+
+dendata <- dendata %>% filter(!Country %in% c("portugal","Germany","France"))
+
+dendata <- dendata %>%
+  group_by(Country)%>%
+  summarise(Median_Transmission_Pot = median(Transmission_Pot),
+            passenger_count= sum(passenger_count))
+  
+
+# Clusterisation using 3 variables
+row.names(dendata)=dendata$Country
+
+
+
+dendata %>% 
+  select(Median_Transmission_Pot) %>% as.data.frame()%>%
+  dist() %>% 
+  hclust() %>% 
+  as.dendrogram() -> dend
+labels(dend) <- row.names(dendata)
+# Plot
+par(mar=c(7,3,1,1))  # Increase bottom margin to have the complete label
+plot(dend)
+```
+
+```{r}
+# Color in function of the cluster
+par(mar=c(1,1,1,7))
+dend %>%
+  set("labels_col", value = c("skyblue", "orange", "grey"), k=3) %>%
+  set("branches_k_color", value = c("skyblue", "orange", "grey"), k = 3) %>%
+  plot(horiz=TRUE, axes=FALSE)
+abline(v = 350, lty = 2)
+```
+
+```{r}
+row.names(dendata)=dendata$Country
+dendata %>% 
+  select(passenger_count) %>% as.data.frame()%>%
+  dist() %>% 
+  hclust(method = "complete") %>% 
+  as.dendrogram() -> d2
+labels(d2) <- row.names(dendata)
+# Plot
+par(mar=c(7,3,1,1)) 
+plot(d2)
+```
+
+```{r}
+dl <- dendlist(
+  dend %>% 
+    set("labels_col", value = c("skyblue", "orange", "grey"), k=3) %>%
+    set("branches_lty", 1) %>%
+    set("branches_k_color", value = c("skyblue", "orange", "grey"), k = 3),
+  d2 %>% 
+    set("labels_col", value = c("blue", "red", "green", "maroon", "violet"), k=5) %>%
+    set("branches_lty", 1) %>%
+    set("branches_k_color", value = c("blue", "red", "green", "maroon", "violet"), k = 5)
+)
+ 
+# Plot them together
+tanglegram(dl, 
+           common_subtrees_color_lines = FALSE, highlight_distinct_edges  = TRUE, highlight_branches_lwd=FALSE, 
+           margin_inner=7,
+           lwd=2
+)
+
+title(main="Dendrogram of Transmission Pot. vs Passenger", cex.main=0.8)
+```
